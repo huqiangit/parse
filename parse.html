@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="en">
+ 
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="X-UA-Compatible" content="ie=edge">
+    <title>文件拖拽</title>
+    <style>
+        #div1 {
+            width: 500px;
+            height: 500px;
+            background: #cccccc;
+            border: 1px solid #000000;
+            text-align: center;
+            line-height: 500px;
+        }
+    </style>
+    <script>
+    	var gg_data = [];
+
+        window.onload = function () {
+            var div1 = document.getElementById("div1");
+            //拖拽进入
+            div1.addEventListener("dragenter", function () {
+                div1.innerHTML = "请松手" ;
+            }, false);
+            //拖拽离开
+            div1.addEventListener("dragleave", function () {
+                div1.innerHTML = "拖到这里进行 parse" ;
+            }, false);
+            //悬停
+            div1.addEventListener("dragover", function (ev) {
+                ev.preventDefault();//取消事件的默认动作，防止浏览器打开文件
+                div1.innerHTML = "请松手" ;
+            }, false);
+            //松手
+
+                  
+            div1.addEventListener("drop", function (ev) {
+                ev.preventDefault();//取消事件的默认动作。
+                let fileReader = new FileReader() ;
+
+                fileReader.onload = function(){
+                	gg_data = new Uint8Array(this.result);
+                	dataparse (gg_data);
+                	div1.innerHTML = "parse done, 拖到这里进行 parse" ;
+                }
+
+                fileReader.onerror = function(){
+                    alert("读取失败");
+                }
+
+                let file = ev.dataTransfer.files[0] ;
+            	fileReader.readAsArrayBuffer(file);
+
+
+            }, false);
+ 
+        }
+
+        // iec 61937 pa0 pa1 pb0 pb1 pc0 pc1
+        var sync_words = [
+        	{
+        		words:[0xf8, 0x72, 0x4e, 0x1f, 0x00, 0x0b],
+        		div: 1,
+        		change_iec_endian : 1,
+        		change_payload_endian: 1,
+        		contain_iec_header: 0
+        	},
+        	{
+        		words:[0x72, 0xf8, 0x4e, 0x1f, 0x04, 0x11],
+        		div: 1,
+        		change_iec_endian : 1,
+        		change_payload_endian : 1,
+        		contain_iec_header: 1
+        	}
+        ];
+
+        function is_match(buf_mode, buf_src)
+        {
+        	var buf_src_len = buf_src.length;
+        	var buf_mode_len = buf_mode.length;
+
+        	if (buf_src_len < 8)// len should be bigger than 8 bytes
+        	{
+        		return -1;
+        	}
+
+        	for (var i = 0; i < buf_mode_len; i++)
+        	{
+        		if (buf_src[i] != buf_mode[i])
+        		{
+        			return 0;
+        		}
+        	}
+        	return 1;
+        }
+
+
+        function find_match_word (sub_buf, sync_words)
+        {
+        	for (var n = 0; n < sync_words.length; n++) 
+        	{
+        		var res = is_match(sync_words[n].words, sub_buf);
+        		if (res == 0)
+        		{
+        			// not matched
+        			continue;
+        		}
+        		else if (res == 1)
+        		{
+        			// sync word has been found in table
+        			return {
+        				state: 1,
+        				table_index: n
+        			}
+        		}
+        		else
+        		{
+        			// sub_buf len is smaller than 8 bytes
+        			return {
+        				state: -1,
+        				table_index: -1
+        			}
+        		}
+        	}
+
+        	// can not find sync word in whole table
+        	return {
+        		state: 0,
+        		table_index: -1
+        	}
+        }
+
+        function chang_endian (buf, change)
+        {
+        	if (change == 1)
+        	{
+	        	var b = [];
+
+	        	for (var i = 0; i < buf.length; i += 2)
+	        	{
+	        		if (i == (buf.length - 1))
+	        		{
+	        			b.push (0);
+	        			b.push (buf[i + 0]);
+	        		}
+	        		else
+	        		{
+		        		b.push (buf[i + 1]);
+		        		b.push (buf[i + 0]);        			
+	        		}
+	        	}
+        		return b;
+        	}
+        	else
+        	{
+        		return buf;
+        	}
+        }
+
+        var prev_match_index = -1;
+
+        function got_data (sub_buf, sync_words_table, table_index)
+        {
+        	var data = {
+        		buf : [],
+        		len : 0,
+        		skip : 0,
+        	};
+
+        	if (((sub_buf[6] * 256 + sub_buf[7]) % sync_words_table[table_index].div) == 0)
+        	{
+        		var payload_len = (sub_buf[6] * 256 + sub_buf[7]) / sync_words_table[table_index].div;
+ 
+
+        		if (sync_words_table[table_index].contain_iec_header == 1)
+        		{
+
+        			//data.buf = chang_endian(sub_buf.slice(0, 8 + payload_len),;
+        			data.buf = chang_endian (
+        					sub_buf.slice(0, 8),
+        					sync_words_table[table_index].change_iec_endian
+        				);
+        			data.buf = data.buf.concat(chang_endian (
+        					sub_buf.slice(8, 8 + payload_len),
+        					sync_words_table[table_index].change_payload_endian
+        				));
+
+        			data.len = 8 + payload_len;
+        			data.skip = 8 + payload_len;
+
+        		}
+        		else
+        		{
+        			data.buf = chang_endian (
+        					sub_buf.slice(8, 8 + payload_len),
+        					sync_words_table[table_index].change_payload_endian
+        				);
+
+        			data.len = payload_len;
+        			data.skip = 8 + payload_len;
+        		}
+
+        		if (sub_buf.length < (8 + payload_len))
+        		{
+        			console.log ("warning data not enough at end");
+        		}
+        	}
+        	else
+        	{
+        		data.buf = [];
+        		data.len = 0;
+        		data.skip = 0;
+        		console.log ("warning not zero");
+        	}
+ 			
+ 			console.log ("[got_data]", data.len, " ", print_buf(data.buf));
+        	return data;
+        }
+
+        function print_buf (buf)
+        {
+        	var str = "";
+        	for (var i = 0; i < buf.length; i++)
+        	{
+        		str += buf[i].toString(16).padStart(2, "0") + " ";
+        	}
+        	return str;
+        }
+
+        function get_output (buf, sync_words)
+        {
+        	var data_set = [];
+
+        	for (var off = 0; off < buf.length; )
+        	{
+        		var tmp_buf = buf.slice(off);
+        		var res = find_match_word (tmp_buf, sync_words);
+        		
+        		if (res.state == -1)
+        		{
+        			console.log ("end", off, " ", print_buf(tmp_buf));
+        			return data_set;
+        		}
+        		else if (res.state == 0)
+        		{
+        			console.log ("unmatched", off, " ", print_buf(tmp_buf));
+        			off++;
+        		}
+        		else if (res.state == 1)
+        		{
+        			console.log ("matched", off, " ", print_buf(tmp_buf));
+        		 	// matched
+        			if (prev_match_index == -1)
+        			{
+        				// find first sync word
+        				prev_match_index = res.table_index;
+        				var data_res = got_data (tmp_buf, sync_words, prev_match_index);
+
+        				var tmp = {
+        					buff: data_res.buf,
+        					len: data_res.len,
+        					table_index: prev_match_index
+        				}
+
+        				data_set.push (tmp);
+        				off += data_res.skip;
+        			}
+        			else
+        			{
+        				if (prev_match_index == res.table_index)
+        				{
+        					//find sync word, sync word not changed
+        					var data_res = got_data (tmp_buf, sync_words, prev_match_index);
+        					var bb = data_set[data_set.length-1].buff;
+
+							data_set[data_set.length-1].buff = bb.concat(data_res.buf);
+        					data_set[data_set.length-1].len += data_res.len;
+
+        					off += data_res.skip;
+        				}
+        				else
+        				{
+        					//find sync word, sync word has changed
+        					prev_match_index = res.table_index;
+	        				var data_res = got_data (tmp_buf, sync_words, prev_match_index);
+
+	        				var tmp = {
+	        					buff: data_res.buf,
+	        					len: data_res.len,
+	        					table_index: prev_match_index
+	        				}
+
+	        				data_set.push (tmp);
+	        				off += data_res.skip;
+
+        				}
+        			}
+        		}
+
+        	}
+        	return data_set;
+        }
+
+        function dataparse (gg_data) 
+        {
+        	console.log (gg_data);
+
+        	var tmp = get_output(Array.from(gg_data), sync_words);
+
+        	console.log ("output: ", print_buf(tmp[0].buff));
+
+
+        }
+    </script>
+</head>
+ 
+<body>
+    <div id="div1">拖到这里上传</div>
+</body>
+</html>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
